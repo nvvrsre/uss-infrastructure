@@ -1,0 +1,7 @@
+monitoringPasscode: "Sonarqube@123"
+community:
+  enabled: true
+postgresql:
+  enabled: true
+service:
+  type: ClusterIP

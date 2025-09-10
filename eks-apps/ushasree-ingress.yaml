@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ushasree-ingress
+  namespace: default
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - www.ushasree.xyz
+      secretName: ushasree-tls
+  rules:
+    - host: www.ushasree.xyz
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway        # Your API Gateway Service
+                port:
+                  number: 80            # (adjust if your service uses a different port)
+          - path: /products
+            pathType: Prefix
+            backend:
+              service:
+                name: product-service   # Your Product Service
+                port:
+                  number: 3002          # (adjust as needed)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend          # Your Frontend Service
+                port:
+                  number: 80

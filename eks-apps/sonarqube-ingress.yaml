@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sonarqube-ingress
+  namespace: default        # Use the namespace where SonarQube is installed!
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"   # Change if your issuer name is different
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - sonarqube.ushasree.xyz   # Change to your desired domain name
+      secretName: sonarqube-tls
+  rules:
+    - host: sonarqube.ushasree.xyz   # Change to your desired domain name
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sonarqube-sonarqube   # Change if your SonarQube service name is different!
+                port:
+                  number: 9000

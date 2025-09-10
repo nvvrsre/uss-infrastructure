@@ -1,0 +1,98 @@
+# ---------------------------------------------
+# 1. Secret: Database Credentials (update values as needed)
+# ---------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sonar-db-secret
+type: Opaque
+data:
+  username: c29uYXI=          # 'sonar' base64
+  password: U29uYXJxdWJlMTIz  # 'Sonarqube123' base64
+
+---
+# ---------------------------------------------
+# 2. PVC: SonarQube Persistent Volume Claim
+# ---------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sonarqube-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2 # Omit if gp2 is default
+
+---
+# ---------------------------------------------
+# 3. Deployment: SonarQube Pod
+# ---------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sonarqube
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sonarqube
+  template:
+    metadata:
+      labels:
+        app: sonarqube
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: sonarqube
+        image: sonarqube:lts
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "1"
+        env:
+        - name: SONAR_JDBC_URL
+          value: jdbc:postgresql://nvvr-rds.c588mswco6jw.ap-south-1.rds.amazonaws.com:5432/sonarqube
+        - name: SONAR_JDBC_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: sonar-db-secret
+              key: username
+        - name: SONAR_JDBC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sonar-db-secret
+              key: password
+        ports:
+        - containerPort: 9000
+        volumeMounts:
+        - mountPath: /opt/sonarqube/data
+          name: sonarqube-storage
+      volumes:
+      - name: sonarqube-storage
+        persistentVolumeClaim:
+          claimName: sonarqube-data
+
+---
+# ---------------------------------------------
+# 4. Service: SonarQube LoadBalancer
+# ---------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarqube
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 9000
+    targetPort: 9000
+  selector:
+    app: sonarqube

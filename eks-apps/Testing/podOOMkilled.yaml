@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oomkill-pod
+  namespace: default
+spec:
+  containers:
+    - name: busybox
+      image: busybox
+      command: ["sh", "-c", "x=a; while true; do x=$x$x$x$x; done"]
+      resources:
+        requests:
+          memory: "8Mi"
+          cpu: "100m"
+        limits:
+          memory: "16Mi"
+          cpu: "200m"

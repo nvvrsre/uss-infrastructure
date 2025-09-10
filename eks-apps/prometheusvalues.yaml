@@ -1,0 +1,44 @@
+alertmanager:
+  config:
+    global:
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'nushasree25@gmail.com'
+      smtp_auth_username: 'nushasree25@gmail.com'
+      smtp_auth_password: 'lbbf divz dhhd nlub'
+      smtp_require_tls: true
+
+    route:
+      receiver: 'slack-notifications'
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 10m
+      routes:
+        - receiver: 'null'
+          match:
+            alertname: KubeControllerManagerDown
+        - receiver: 'null'
+          match:
+            alertname: KubeSchedulerDown
+        - receiver: 'null'
+          match:
+            alertname: Watchdog
+        - receiver: 'email-notifications'
+          match:
+            severity: critical
+
+    receivers:
+      - name: 'email-notifications'
+        email_configs:
+          - to: 'nvvr53@gmail.com'
+            send_resolved: true
+
+      - name: 'slack-notifications'
+        slack_configs:
+          - api_url: 'https://hooks.slack.com/services/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'
+            channel: '#alerts'
+            send_resolved: true
+
+      - name: 'null'
+
+  alertmanagerSpec:
+    externalUrl: "https://prometheus.ushasree.xyz"
