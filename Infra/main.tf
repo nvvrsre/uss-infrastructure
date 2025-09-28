@@ -12,10 +12,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "ushasreestores-s3-tf-state"
+    bucket         = "ushasreestores-s3-tfstate"
     key            = "ushasreestores/terraform.tfstate"
     region         = "ap-south-1"
-    dynamodb_table = "ushasreestores-s3-tf-lock"
+    dynamodb_table = "ushasreestores-s3-tflock"
     encrypt        = true
   }
 }

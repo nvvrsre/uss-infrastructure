@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+# Run from repo root regardless of where it's invoked
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$BASE_DIR"
+
 # ===== Helpers =====
 wait_rollout() {
   local ns="$1" dep="$2" timeout="${3:-180s}"
@@ -46,6 +50,7 @@ apply_with_retry() {
 # ==============================
 
 echo "👉 Setting default StorageClass..."
+# NOTE: many EKS clusters now default to gp3. Keep gp2 if that's what you created.
 kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' || true
 kubectl get storageclass
 
@@ -55,7 +60,9 @@ kubectl get storageclass
 echo "👉 Installing SonarQube..."
 helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
 helm repo update
-helm upgrade --install sonarqube sonarqube/sonarqube -n default -f sonarqubevalues.yaml
+helm upgrade --install sonarqube sonarqube/sonarqube \
+  -n default \
+  -f "${BASE_DIR}/sonarqube/sonarqubevalues.yaml"
 
 # ==============================
 # Install NGINX Ingress Controller
@@ -63,7 +70,8 @@ helm upgrade --install sonarqube sonarqube/sonarqube -n default -f sonarqubevalu
 echo "👉 Installing NGINX Ingress..."
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
-helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace
+helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx --create-namespace
 
 # ==============================
 # Install Cert-Manager (with waits)
@@ -81,14 +89,15 @@ kubectl -n cert-manager get svc cert-manager-webhook
 wait_endpoints cert-manager cert-manager-webhook 180
 
 echo "👉 Applying ClusterIssuer (with retry)..."
-apply_with_retry cluster-issuer.yaml 6 8
+# You have two similar files in the tree; using the one under nginx-ingress/
+apply_with_retry "${BASE_DIR}/nginx-ingress/cluster-issuer.yaml" 6 8
 
 # ==============================
 # Apply Ingress Rules
 # ==============================
 echo "👉 Applying Ingress manifests..."
-kubectl apply -f ushasree-ingress.yaml
-kubectl apply -f sonarqube-ingress.yaml
+apply_with_retry "${BASE_DIR}/nginx-ingress/ushasree-ingress.yaml"
+apply_with_retry "${BASE_DIR}/sonarqube/sonarqube-ingress.yaml"
 
 # ==============================
 # Install Prometheus + Grafana
@@ -96,10 +105,12 @@ kubectl apply -f sonarqube-ingress.yaml
 echo "👉 Installing Prometheus Stack..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
-helm upgrade --install monitoring prometheus-community/kube-prometheus-stack --namespace monitoring --create-namespace -f prometheusvalues.yaml
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f "${BASE_DIR}/monitoring/prometheusvalues.yaml"
 
 echo "👉 Applying Grafana Ingress..."
-kubectl apply -f grafana-ingress.yaml
+apply_with_retry "${BASE_DIR}/monitoring/grafana-ingress.yaml"
 
 # ==============================
 # Install ArgoCD
@@ -108,16 +119,36 @@ echo "👉 Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update
 helm upgrade --install argocd argo/argo-cd --namespace argocd --create-namespace
-kubectl apply -f argocd-ingress.yaml
 
-# Apply ArgoCD Apps
-kubectl apply -f argocd-apps/
+# ArgoCD ingress + apps
+apply_with_retry "${BASE_DIR}/argocd/argocd-ingress.yaml"
+kubectl apply -f "${BASE_DIR}/argocd/argocd-apps/"
 
 # ==============================
 # Check Certificates
 # ==============================
 echo "👉 Checking Certificates..."
-kubectl get certificate -A
+kubectl get certificate -A || true
+
+
+kubectl get svc -A | grep LoadBalancer || true
+
+echo "Copy the above LoadBalancer IPs and create DNS A records for the required domains."
+
+sleep 100
+
+echo "👉 Recreating Ingress manifests to ensure final state..."
+# Delete then re-apply (only the files that exist in the new layout)
+kubectl delete -f "${BASE_DIR}/nginx-ingress/ushasree-ingress.yaml" || true
+kubectl delete -f "${BASE_DIR}/sonarqube/sonarqube-ingress.yaml" || true
+kubectl delete -f "${BASE_DIR}/monitoring/grafana-ingress.yaml" || true
+kubectl delete -f "${BASE_DIR}/argocd/argocd-ingress.yaml" || true
+
+apply_with_retry "${BASE_DIR}/nginx-ingress/ushasree-ingress.yaml"
+apply_with_retry "${BASE_DIR}/sonarqube/sonarqube-ingress.yaml"
+apply_with_retry "${BASE_DIR}/monitoring/grafana-ingress.yaml"
+apply_with_retry "${BASE_DIR}/argocd/argocd-ingress.yaml"
+
 
 # ==============================
 # Get ArgoCD Initial Admin Password
@@ -125,7 +156,10 @@ kubectl get certificate -A
 echo "👉 Getting ArgoCD Initial Admin Password..."
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
 
+sleep 400
+echo "👉 Final Certificate Check..."
+kubectl get certificate -A
 
-sleep 420
+echo "✅ Deployment completed successfully! Now you can access the installed applications via their respective domains."
 
-echo "✅ Deployment completed successfully!"
+echo "✅✅✅✅✅ Ushasree Stores has been developed by Ushasree Technologies(N Vishnuvardhan & Mentor(ChatGPT))"
