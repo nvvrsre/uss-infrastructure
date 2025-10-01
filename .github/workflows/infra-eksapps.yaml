@@ -18,13 +18,15 @@ env:
   EKS_CLUSTER_NAME: ushasreestores-eks
   TF_IN_AUTOMATION: true
   TF_INPUT: 0
+  TF_STATE_KEY: infra/terraform.tfstate
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
+  TF_STATE_DDB: ${{ vars.TF_STATE_DYNAMODB_TABLE || 'ushasreestores-s3-tflock' }}
 
 jobs:
   infra_and_deploy:
     runs-on: ubuntu-latest
     concurrency:
       group: infra-and-deploy-${{ github.ref_name }}
-      cancel-in-progress: false
     defaults:
       run:
         shell: bash
@@ -44,13 +46,56 @@ jobs:
         with:
           terraform_version: 1.9.5
 
+      # ---------- Phase 0: optional fmt (non-blocking) ----------
+      - name: Terraform fmt (non-blocking)
+        working-directory: Infra
+        run: |
+          set +e
+          terraform fmt -check -recursive
+          status=$?
+          if [ $status -eq 3 ]; then
+            echo "::warning::Terraform files need formatting. Run 'terraform fmt -recursive' locally."
+            terraform fmt -diff -recursive || true
+            exit 0
+          fi
+          exit $status
 
-      - name: Terraform apply
+      # ---------- Phase 1: Bootstrap backend resources with local backend ----------
+      - name: Init (LOCAL backend, no S3 yet)
+        working-directory: Infra
+        run: terraform init -reconfigure -backend=false
+
+      - name: Create S3 bucket & DynamoDB lock (bootstrap)
         working-directory: Infra
         run: |
           set -euo pipefail
-          terraform init
-          terraform apply -auto-approve
+          # Apply only the backend infra resources
+          terraform apply -auto-approve \
+            -target=aws_s3_bucket.tfstate \
+            -target=aws_s3_bucket_versioning.tfstate \
+            -target=aws_s3_bucket_server_side_encryption_configuration.tfstate \
+            -target=aws_dynamodb_table.tf_lock
+
+      # ---------- Phase 2: Re-init using S3 backend (now exists) ----------
+      - name: Re-init to S3 backend (reconfigure + migrate)
+        working-directory: Infra
+        run: |
+          set -euo pipefail
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ env.TF_STATE_DDB }}" \
+            -backend-config="encrypt=true"
+
+      - name: Validate
+        working-directory: Infra
+        run: terraform validate
+
+      # ---------- Phase 3: Apply full infra (EKS/VPC/RDS etc.) ----------
+      - name: Terraform apply (full)
+        working-directory: Infra
+        run: terraform apply -auto-approve
 
       - name: Wait for EKS ACTIVE
         run: |
@@ -94,7 +139,6 @@ jobs:
           kubectl get svc -A
           kubectl get ingress -A
 
-      # --------- Failure diagnostics & artifacts ----------
       - name: Collect diagnostics on failure
         if: failure()
         run: |
