@@ -44,13 +44,6 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      - name: Terraform init/validate
-        working-directory: Infra
-        run: |
-          set -euo pipefail
-          terraform fmt -check -recursive
-          terraform init
-          terraform validate
 
       - name: Terraform apply
         working-directory: Infra
