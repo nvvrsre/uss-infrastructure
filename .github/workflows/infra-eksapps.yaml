@@ -1,0 +1,120 @@
+name: Infra + EKS Deploy (One Flow)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Infra/**'
+      - 'eks-apps/**'
+      - '.github/workflows/infra-and-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  EKS_CLUSTER_NAME: ushasreestores-eks
+  TF_IN_AUTOMATION: true
+  TF_INPUT: 0
+
+jobs:
+  infra_and_deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: infra-and-deploy-${{ github.ref_name }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Terraform init/validate
+        working-directory: Infra
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
+          terraform init
+          terraform validate
+
+      - name: Terraform apply
+        working-directory: Infra
+        run: |
+          set -euo pipefail
+          terraform apply -auto-approve
+
+      - name: Wait for EKS ACTIVE
+        run: |
+          set -euo pipefail
+          aws eks wait cluster-active --name "$EKS_CLUSTER_NAME"
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Update kubeconfig & quick check
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          kubectl version --short || true
+          kubectl get nodes -o wide
+
+      - name: Make scripts executable
+        run: |
+          chmod +x eks-apps/deployapps.sh || true
+          chmod +x eks-apps/appsdeploy.sh || true
+          chmod +x eks-apps/argocd/argocd.sh || true
+          chmod +x eks-apps/nginx-ingress/*.sh || true
+          chmod +x eks-apps/monitoring/monitoring.sh || true
+
+      - name: Deploy apps (deployapps.sh)
+        run: |
+          set -euo pipefail
+          ./eks-apps/deployapps.sh
+
+      - name: Post-deploy sanity
+        run: |
+          kubectl get ns
+          kubectl get pods -A
+          kubectl get svc -A
+          kubectl get ingress -A
+
+      # --------- Failure diagnostics & artifacts ----------
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          mkdir -p diag
+          kubectl get nodes -o wide > diag/nodes.txt || true
+          kubectl get pods -A -o wide > diag/pods.txt || true
+          kubectl describe pods -A > diag/pods_describe.txt || true
+          kubectl get events -A --sort-by=.lastTimestamp > diag/events.txt || true
+          kubectl get ing -A -o yaml > diag/ingresses.yaml || true
+          kubectl get svc -A -o yaml > diag/services.yaml || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-diagnostics
+          path: diag/
