@@ -2,7 +2,7 @@ resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = { Name = "ushasreestores-vpc" }
+  tags                 = { Name = "ushasreestores-vpc" }
 }
 
 resource "aws_subnet" "public" {
@@ -12,10 +12,10 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
   availability_zone       = var.azs[count.index]
   tags = {
-    Name                                       = "public-subnet-${count.index + 1}"
-    Type                                       = "public"
+    Name                                        = "public-subnet-${count.index + 1}"
+    Type                                        = "public"
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/elb"                   = "1"
+    "kubernetes.io/role/elb"                    = "1"
   }
 }
 
@@ -25,10 +25,10 @@ resource "aws_subnet" "private" {
   cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
   availability_zone = var.azs[count.index]
   tags = {
-    Name                                       = "private-subnet-${count.index + 1}"
-    Type                                       = "private"
+    Name                                        = "private-subnet-${count.index + 1}"
+    Type                                        = "private"
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"          = "1"
+    "kubernetes.io/role/internal-elb"           = "1"
   }
 }
 
@@ -45,7 +45,7 @@ resource "aws_nat_gateway" "this" {
   count         = length(var.azs)
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
-  tags = { Name = "ushasreestores-nat-${count.index + 1}" }
+  tags          = { Name = "ushasreestores-nat-${count.index + 1}" }
 }
 
 resource "aws_route_table" "public" {
