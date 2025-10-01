@@ -1,4 +1,4 @@
-name: Infra + EKS Deploy (One Flow)
+name: Infra + EKS Deploy (OIDC, One Flow)
 
 on:
   push:
@@ -10,10 +10,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write     # REQUIRED for OIDC
   contents: read
 
 env:
+  # Prefer repo SECRETS; fall back to VARS; then defaults
   AWS_REGION: ${{ secrets.AWS_REGION || vars.AWS_REGION || 'ap-south-1' }}
   EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME || 'ushasreestores-eks' }}
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
@@ -32,28 +33,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # If you're using access keys (your logs show AK/SK), keep this.
-      # If you move to OIDC, replace with role-to-assume instead.
-      - name: Configure AWS credentials (Access Keys)
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}   # <-- your IAM Role ARN in repo secrets
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Who am I (sanity)
+        run: aws sts get-caller-identity
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.5
 
-      - name: Show TF & AWS context
+      # (Optional) fmt that won’t fail the run on exit code 3
+      - name: Terraform fmt (non-blocking)
         run: |
-          terraform -version
-          aws sts get-caller-identity
-          echo "Bucket: ${TF_STATE_BUCKET}  Table: ${TF_STATE_DYNAMODB_TABLE}  Key: ${TF_STATE_KEY}"
+          set +e
+          terraform -chdir=Infra fmt -check -recursive
+          status=$?
+          if [ $status -eq 3 ]; then
+            echo "::warning::Terraform files need formatting. Run 'terraform fmt -recursive' locally."
+            terraform -chdir=Infra fmt -diff -recursive || true
+            exit 0
+          fi
+          exit $status
 
-      # ---------- BOOTSTRAP (LOCAL backend) ----------
-      # Only create bucket/table if they don't exist; else skip.
+      # ---------- Phase 1: Bootstrap state backend (LOCAL backend) ----------
+      # Only if bucket/table are missing
       - name: Check backend resources
         id: backend_exists
         run: |
@@ -81,7 +89,7 @@ jobs:
             -target=aws_s3_bucket_server_side_encryption_configuration.tfstate \
             -target=aws_dynamodb_table.tf_lock
 
-      # ---------- RE-INIT TO S3 BACKEND (REQUIRED) ----------
+      # ---------- Phase 2: Re-init to S3 backend (REQUIRED) ----------
       - name: Terraform init (S3 backend, reconfigure)
         run: |
           set -euo pipefail
@@ -96,27 +104,13 @@ jobs:
       - name: Terraform validate
         run: terraform -chdir=Infra validate
 
-      # Optional fmt that won't fail pipeline on exit code 3
-      - name: Terraform fmt (non-blocking)
-        run: |
-          set +e
-          terraform -chdir=Infra fmt -check -recursive
-          status=$?
-          if [ $status -eq 3 ]; then
-            echo "::warning::Run 'terraform fmt -recursive' locally to fix formatting."
-            terraform -chdir=Infra fmt -diff -recursive || true
-            exit 0
-          fi
-          exit $status
-
-      # ---------- FULL APPLY ----------
       - name: Terraform plan
         run: terraform -chdir=Infra plan -input=false -out=tfplan.bin
 
       - name: Terraform apply
         run: terraform -chdir=Infra apply -input=false -auto-approve tfplan.bin
 
-      # ---------- EKS DEPLOY ----------
+      # ---------- Phase 3: EKS deploy ----------
       - name: Wait for EKS ACTIVE
         run: aws eks wait cluster-active --name "$EKS_CLUSTER_NAME"
 
@@ -157,6 +151,7 @@ jobs:
           kubectl get svc -A
           kubectl get ingress -A
 
+      # Diagnostics if something breaks
       - name: Collect diagnostics on failure
         if: failure()
         run: |
