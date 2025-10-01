@@ -49,6 +49,7 @@ jobs:
         working-directory: Infra
         run: |
           set -euo pipefail
+          terraform init
           terraform apply -auto-approve
 
       - name: Wait for EKS ACTIVE
