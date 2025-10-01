@@ -10,11 +10,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write     # REQUIRED for OIDC
+  id-token: write
   contents: read
 
 env:
-  # Prefer repo SECRETS; fall back to VARS; then defaults
   AWS_REGION: ${{ secrets.AWS_REGION || vars.AWS_REGION || 'ap-south-1' }}
   EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME || 'ushasreestores-eks' }}
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
@@ -36,7 +35,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}   # <-- your IAM Role ARN in repo secrets
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Who am I (sanity)
@@ -47,21 +46,7 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      # (Optional) fmt that won’t fail the run on exit code 3
-      - name: Terraform fmt (non-blocking)
-        run: |
-          set +e
-          terraform -chdir=Infra fmt -check -recursive
-          status=$?
-          if [ $status -eq 3 ]; then
-            echo "::warning::Terraform files need formatting. Run 'terraform fmt -recursive' locally."
-            terraform -chdir=Infra fmt -diff -recursive || true
-            exit 0
-          fi
-          exit $status
-
-      # ---------- Phase 1: Bootstrap state backend (LOCAL backend) ----------
-      # Only if bucket/table are missing
+      # ---------- Phase 1: Bootstrap backend ----------
       - name: Check backend resources
         id: backend_exists
         run: |
@@ -82,24 +67,21 @@ jobs:
       - name: Create S3 & DynamoDB (bootstrap)
         if: steps.backend_exists.outputs.need_bootstrap == '1'
         run: |
-          set -euo pipefail
           terraform -chdir=Infra apply -auto-approve \
             -target=aws_s3_bucket.tfstate \
             -target=aws_s3_bucket_versioning.tfstate \
             -target=aws_s3_bucket_server_side_encryption_configuration.tfstate \
             -target=aws_dynamodb_table.tf_lock
 
-      # ---------- Phase 2: Re-init to S3 backend (REQUIRED) ----------
+      # ---------- Phase 2: Re-init to S3 backend ----------
       - name: Terraform init (S3 backend, reconfigure)
         run: |
-          set -euo pipefail
           terraform -chdir=Infra init -reconfigure \
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="key=${TF_STATE_KEY}" \
             -backend-config="region=${AWS_REGION}" \
             -backend-config="dynamodb_table=${TF_STATE_DYNAMODB_TABLE}" \
             -backend-config="encrypt=true"
-          ls -al Infra/.terraform || true
 
       - name: Terraform validate
         run: terraform -chdir=Infra validate
@@ -126,7 +108,6 @@ jobs:
 
       - name: Update kubeconfig & quick check
         run: |
-          set -euo pipefail
           aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
           kubectl version --short || true
           kubectl get nodes -o wide
@@ -140,9 +121,7 @@ jobs:
           chmod +x eks-apps/monitoring/monitoring.sh || true
 
       - name: Deploy apps (deployapps.sh)
-        run: |
-          set -euo pipefail
-          ./eks-apps/deployapps.sh
+        run: ./eks-apps/deployapps.sh
 
       - name: Post-deploy sanity
         run: |
@@ -151,7 +130,6 @@ jobs:
           kubectl get svc -A
           kubectl get ingress -A
 
-      # Diagnostics if something breaks
       - name: Collect diagnostics on failure
         if: failure()
         run: |
