@@ -112,7 +112,12 @@ jobs:
           kubectl version --client=true -o yaml || true
           kubectl get nodes -o wide
 
-      # ---- NEW: ensure your local IAM user has cluster-admin access (idempotent) ----
+      # ---- Ensure your local IAM user has cluster-admin (idempotent) ----
+      - name: Show aws-auth BEFORE
+        run: |
+          set -e
+          kubectl -n kube-system get configmap aws-auth -o yaml || true
+
       - name: Install eksctl (Linux runner)
         run: |
           set -e
@@ -121,15 +126,25 @@ jobs:
           sudo mv eksctl /usr/local/bin
           eksctl version || true
 
-      - name: Grant Vishnu cluster-admin (idempotent)
+      - name: Ensure Vishnu is mapped in aws-auth
         run: |
           set -euo pipefail
-          eksctl create iamidentitymapping \
-            --region "${AWS_REGION}" \
-            --cluster "${EKS_CLUSTER_NAME}" \
-            --arn arn:aws:iam::182462214834:user/Vishnuvardhan \
-            --username vishnu \
-            --group system:masters
+          if ! kubectl -n kube-system get configmap aws-auth -o yaml | grep -q "arn:aws:iam::182462214834:user/Vishnuvardhan"; then
+            eksctl create iamidentitymapping \
+              --region "${AWS_REGION}" \
+              --cluster "${EKS_CLUSTER_NAME}" \
+              --arn arn:aws:iam::182462214834:user/Vishnuvardhan \
+              --username vishnu \
+              --group system:masters
+            echo "✅ Added mapping to aws-auth"
+          else
+            echo "✅ Mapping already present in aws-auth"
+          fi
+
+      - name: Show aws-auth AFTER
+        run: |
+          set -e
+          kubectl -n kube-system get configmap aws-auth -o yaml
 
       - name: Make scripts executable
         run: |
