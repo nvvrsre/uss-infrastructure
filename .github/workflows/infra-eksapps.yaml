@@ -46,7 +46,7 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      # ---------- Phase 1: Bootstrap backend ----------
+      # ---------- Phase 1: Bootstrap backend (only if missing) ----------
       - name: Check backend resources
         id: backend_exists
         run: |
@@ -109,8 +109,27 @@ jobs:
       - name: Update kubeconfig & quick check
         run: |
           aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
-          kubectl version --short || true
+          kubectl version --client=true -o yaml || true
           kubectl get nodes -o wide
+
+      # ---- NEW: ensure your local IAM user has cluster-admin access (idempotent) ----
+      - name: Install eksctl (Linux runner)
+        run: |
+          set -e
+          curl -sSL https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz -o eksctl.tar.gz
+          tar -xzf eksctl.tar.gz
+          sudo mv eksctl /usr/local/bin
+          eksctl version || true
+
+      - name: Grant Vishnu cluster-admin (idempotent)
+        run: |
+          set -euo pipefail
+          eksctl create iamidentitymapping \
+            --region "${AWS_REGION}" \
+            --cluster "${EKS_CLUSTER_NAME}" \
+            --arn arn:aws:iam::182462214834:user/Vishnuvardhan \
+            --username vishnu \
+            --group system:masters
 
       - name: Make scripts executable
         run: |
