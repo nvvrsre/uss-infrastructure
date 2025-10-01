@@ -1,0 +1,130 @@
+name: Infra Destroy (OIDC, Safe)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type I UNDERSTAND to confirm destroying infra'
+        required: true
+        default: 'I UNDERSTAND'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || vars.AWS_REGION || 'ap-south-1' }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME || 'ushasreestores-eks' }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
+  TF_STATE_DYNAMODB_TABLE: ${{ secrets.TF_STATE_DYNAMODB_TABLE || vars.TF_STATE_DYNAMODB_TABLE || 'ushasreestores-s3-tflock' }}
+  TF_STATE_KEY: ${{ secrets.TF_STATE_KEY || 'infra/terraform.tfstate' }}
+  TF_IN_AUTOMATION: true
+  TF_INPUT: 0
+
+jobs:
+  destroy:
+    if: inputs.confirm == 'I UNDERSTAND'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: infra-destroy-${{ github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Who am I
+        run: aws sts get-caller-identity
+
+      # -------- Optional: try to clean apps BEFORE nuking infra --------
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Try to update kubeconfig (ignore if cluster already gone)
+        continue-on-error: true
+        run: |
+          set -e
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          kubectl version --client=true -o yaml || true
+
+      - name: Make delete script executable
+        run: |
+          chmod +x eks-apps/deleteapps.sh || true
+
+      - name: Delete apps from EKS (best effort)
+        continue-on-error: true
+        run: |
+          set -e
+          if kubectl cluster-info >/dev/null 2>&1; then
+            echo "Cluster reachable. Running deleteapps.sh ..."
+            ./eks-apps/deleteapps.sh
+            # Optional: wait a bit for AWS LBs/PVs to be released
+            echo "Waiting 60s for cloud resources to detach..."
+            sleep 60
+          else
+            echo "Cluster not reachable; skipping app deletion."
+          fi
+
+      # --------------------- Terraform destroy -------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Terraform init (S3 backend, reconfigure)
+        working-directory: Infra
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TF_STATE_DYNAMODB_TABLE}" \
+            -backend-config="encrypt=true"
+
+      # IMPORTANT:
+      # Destroy only the infra modules (keep state backend infra to avoid bricking TF).
+      # If your module block names differ, adjust the targets below.
+      - name: Terraform destroy (modules only)
+        working-directory: Infra
+        run: |
+          set -euo pipefail
+          # Show what will be destroyed
+          terraform plan -destroy -input=false \
+            -target=module.vpc \
+            -target=module.eks \
+            -target=module.rds || true
+
+          # Destroy with the same targets (idempotent, safe to re-run)
+          terraform destroy -auto-approve \
+            -target=module.vpc \
+            -target=module.eks \
+            -target=module.rds
+
+      - name: Post-destroy sanity (best effort)
+        continue-on-error: true
+        run: |
+          set -e
+          aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          echo "If this still prints, EKS is not fully deleted yet."
+          exit 0
+
+      # ------------- OPTIONAL (commented): Nuke backend state infra -------------
+      # WARNING: Only do this if you want to delete the S3 state bucket and the lock table.
+      # Steps needed (manual / separate job recommended):
+      # 1) terraform state pull > local.tfstate (optional backup)
+      # 2) Migrate to local backend: terraform init -migrate-state -backend=false
+      # 3) Empty the S3 bucket object versions and delete the bucket
+      # 4) Delete the DynamoDB table
+      # This is dangerous and usually NOT recommended.
