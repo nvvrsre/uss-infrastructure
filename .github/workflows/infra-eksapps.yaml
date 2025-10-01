@@ -10,35 +10,42 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write   # OIDC
+  id-token: write
   contents: read
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
-  EKS_CLUSTER_NAME: ushasreestores-eks
+  # Prefer repo SECRETS, then VARS, then defaults
+  AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME || vars.EKS_CLUSTER_NAME || 'ushasreestores-eks' }}
   TF_IN_AUTOMATION: true
   TF_INPUT: 0
-  TF_STATE_KEY: infra/terraform.tfstate
-  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
-  TF_STATE_DDB: ${{ vars.TF_STATE_DYNAMODB_TABLE || 'ushasreestores-s3-tflock' }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
+  TF_STATE_DYNAMODB_TABLE: ${{ secrets.TF_STATE_DYNAMODB_TABLE || vars.TF_STATE_DYNAMODB_TABLE || 'ushasreestores-s3-tflock' }}
+  TF_STATE_KEY: ${{ secrets.TF_STATE_KEY || 'infra/terraform.tfstate' }}
 
 jobs:
   infra_and_deploy:
     runs-on: ubuntu-latest
     concurrency:
       group: infra-and-deploy-${{ github.ref_name }}
-    defaults:
-      run:
-        shell: bash
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      # If you use OIDC role: uncomment this and remove access keys from secrets
+      # - name: Configure AWS credentials (OIDC)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+      #     aws-region: ${{ env.AWS_REGION }}
+
+      # If you're using ACCESS KEYS in repo secrets (as your logs show):
+      - name: Configure AWS credentials (Access Keys)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
@@ -46,7 +53,7 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      # ---------- Phase 0: optional fmt (non-blocking) ----------
+      # ---- Optional fmt check (won’t fail pipeline on code 3) ----
       - name: Terraform fmt (non-blocking)
         working-directory: Infra
         run: |
@@ -60,47 +67,45 @@ jobs:
           fi
           exit $status
 
-      # ---------- Phase 1: Bootstrap backend resources with local backend ----------
-      - name: Init (LOCAL backend, no S3 yet)
+      # ---- Phase 1: bootstrap state bucket + lock table using LOCAL backend ----
+      - name: Terraform init (local backend)
         working-directory: Infra
         run: terraform init -reconfigure -backend=false
 
-      - name: Create S3 bucket & DynamoDB lock (bootstrap)
+      - name: Create S3 & DynamoDB for backend (bootstrap)
         working-directory: Infra
         run: |
           set -euo pipefail
-          # Apply only the backend infra resources
           terraform apply -auto-approve \
             -target=aws_s3_bucket.tfstate \
             -target=aws_s3_bucket_versioning.tfstate \
             -target=aws_s3_bucket_server_side_encryption_configuration.tfstate \
             -target=aws_dynamodb_table.tf_lock
 
-      # ---------- Phase 2: Re-init using S3 backend (now exists) ----------
-      - name: Re-init to S3 backend (reconfigure + migrate)
+      # ---- Phase 2: re-init to S3 backend (this was missing!) ----
+      - name: Terraform init (S3 backend, reconfigure)
         working-directory: Infra
         run: |
           set -euo pipefail
           terraform init -reconfigure \
-            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY }}" \
-            -backend-config="region=${{ env.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ env.TF_STATE_DDB }}" \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TF_STATE_DYNAMODB_TABLE}" \
             -backend-config="encrypt=true"
 
-      - name: Validate
+      - name: Terraform validate
         working-directory: Infra
         run: terraform validate
 
-      # ---------- Phase 3: Apply full infra (EKS/VPC/RDS etc.) ----------
-      - name: Terraform apply (full)
+      # ---- Phase 3: full apply (VPC/EKS/RDS/…) ----
+      - name: Terraform apply (full infra)
         working-directory: Infra
         run: terraform apply -auto-approve
 
+      # ---- EKS deploy steps ----
       - name: Wait for EKS ACTIVE
-        run: |
-          set -euo pipefail
-          aws eks wait cluster-active --name "$EKS_CLUSTER_NAME"
+        run: aws eks wait cluster-active --name "${{ env.EKS_CLUSTER_NAME }}"
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -115,7 +120,7 @@ jobs:
       - name: Update kubeconfig & quick check
         run: |
           set -euo pipefail
-          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
           kubectl version --short || true
           kubectl get nodes -o wide
 
