@@ -22,7 +22,7 @@ terraform {
 
 # --- Root AWS provider ---
 provider "aws" {
-  region = var.aws_region
+  region = "ap-south-1"
 }
 
 # --- Your existing modules (unchanged) ---

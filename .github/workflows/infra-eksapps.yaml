@@ -14,14 +14,13 @@ permissions:
   contents: read
 
 env:
-  # Prefer repo SECRETS, then VARS, then defaults
-  AWS_REGION: ${{ secrets.AWS_REGION != '' && secrets.AWS_REGION || vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
-  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME || vars.EKS_CLUSTER_NAME || 'ushasreestores-eks' }}
-  TF_IN_AUTOMATION: true
-  TF_INPUT: 0
+  AWS_REGION: ${{ secrets.AWS_REGION || vars.AWS_REGION || 'ap-south-1' }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME || 'ushasreestores-eks' }}
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET || 'ushasreestores-s3-tfstate' }}
   TF_STATE_DYNAMODB_TABLE: ${{ secrets.TF_STATE_DYNAMODB_TABLE || vars.TF_STATE_DYNAMODB_TABLE || 'ushasreestores-s3-tflock' }}
   TF_STATE_KEY: ${{ secrets.TF_STATE_KEY || 'infra/terraform.tfstate' }}
+  TF_IN_AUTOMATION: true
+  TF_INPUT: 0
 
 jobs:
   infra_and_deploy:
@@ -33,14 +32,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # If you use OIDC role: uncomment this and remove access keys from secrets
-      # - name: Configure AWS credentials (OIDC)
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-      #     aws-region: ${{ env.AWS_REGION }}
-
-      # If you're using ACCESS KEYS in repo secrets (as your logs show):
+      # If you're using access keys (your logs show AK/SK), keep this.
+      # If you move to OIDC, replace with role-to-assume instead.
       - name: Configure AWS credentials (Access Keys)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -53,59 +46,79 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      # ---- Optional fmt check (won’t fail pipeline on code 3) ----
-      - name: Terraform fmt (non-blocking)
-        working-directory: Infra
+      - name: Show TF & AWS context
         run: |
-          set +e
-          terraform fmt -check -recursive
-          status=$?
-          if [ $status -eq 3 ]; then
-            echo "::warning::Terraform files need formatting. Run 'terraform fmt -recursive' locally."
-            terraform fmt -diff -recursive || true
-            exit 0
+          terraform -version
+          aws sts get-caller-identity
+          echo "Bucket: ${TF_STATE_BUCKET}  Table: ${TF_STATE_DYNAMODB_TABLE}  Key: ${TF_STATE_KEY}"
+
+      # ---------- BOOTSTRAP (LOCAL backend) ----------
+      # Only create bucket/table if they don't exist; else skip.
+      - name: Check backend resources
+        id: backend_exists
+        run: |
+          set -e
+          need_bootstrap=0
+          if ! aws s3api head-bucket --bucket "${TF_STATE_BUCKET}" 2>/dev/null; then
+            need_bootstrap=1
           fi
-          exit $status
+          if ! aws dynamodb describe-table --table-name "${TF_STATE_DYNAMODB_TABLE}" >/dev/null 2>&1; then
+            need_bootstrap=1
+          fi
+          echo "need_bootstrap=${need_bootstrap}" >> "$GITHUB_OUTPUT"
 
-      # ---- Phase 1: bootstrap state bucket + lock table using LOCAL backend ----
-      - name: Terraform init (local backend)
-        working-directory: Infra
-        run: terraform init -reconfigure -backend=false
+      - name: Terraform init (LOCAL, no backend)
+        if: steps.backend_exists.outputs.need_bootstrap == '1'
+        run: terraform -chdir=Infra init -reconfigure -backend=false
 
-      - name: Create S3 & DynamoDB for backend (bootstrap)
-        working-directory: Infra
+      - name: Create S3 & DynamoDB (bootstrap)
+        if: steps.backend_exists.outputs.need_bootstrap == '1'
         run: |
           set -euo pipefail
-          terraform apply -auto-approve \
+          terraform -chdir=Infra apply -auto-approve \
             -target=aws_s3_bucket.tfstate \
             -target=aws_s3_bucket_versioning.tfstate \
             -target=aws_s3_bucket_server_side_encryption_configuration.tfstate \
             -target=aws_dynamodb_table.tf_lock
 
-      # ---- Phase 2: re-init to S3 backend (this was missing!) ----
+      # ---------- RE-INIT TO S3 BACKEND (REQUIRED) ----------
       - name: Terraform init (S3 backend, reconfigure)
-        working-directory: Infra
         run: |
           set -euo pipefail
-          terraform init -reconfigure \
+          terraform -chdir=Infra init -reconfigure \
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="key=${TF_STATE_KEY}" \
             -backend-config="region=${AWS_REGION}" \
             -backend-config="dynamodb_table=${TF_STATE_DYNAMODB_TABLE}" \
             -backend-config="encrypt=true"
+          ls -al Infra/.terraform || true
 
       - name: Terraform validate
-        working-directory: Infra
-        run: terraform validate
+        run: terraform -chdir=Infra validate
 
-      # ---- Phase 3: full apply (VPC/EKS/RDS/…) ----
-      - name: Terraform apply (full infra)
-        working-directory: Infra
-        run: terraform apply -auto-approve
+      # Optional fmt that won't fail pipeline on exit code 3
+      - name: Terraform fmt (non-blocking)
+        run: |
+          set +e
+          terraform -chdir=Infra fmt -check -recursive
+          status=$?
+          if [ $status -eq 3 ]; then
+            echo "::warning::Run 'terraform fmt -recursive' locally to fix formatting."
+            terraform -chdir=Infra fmt -diff -recursive || true
+            exit 0
+          fi
+          exit $status
 
-      # ---- EKS deploy steps ----
+      # ---------- FULL APPLY ----------
+      - name: Terraform plan
+        run: terraform -chdir=Infra plan -input=false -out=tfplan.bin
+
+      - name: Terraform apply
+        run: terraform -chdir=Infra apply -input=false -auto-approve tfplan.bin
+
+      # ---------- EKS DEPLOY ----------
       - name: Wait for EKS ACTIVE
-        run: aws eks wait cluster-active --name "${{ env.EKS_CLUSTER_NAME }}"
+        run: aws eks wait cluster-active --name "$EKS_CLUSTER_NAME"
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -120,7 +133,7 @@ jobs:
       - name: Update kubeconfig & quick check
         run: |
           set -euo pipefail
-          aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
           kubectl version --short || true
           kubectl get nodes -o wide
 
