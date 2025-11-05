@@ -11,10 +11,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - grafana.ushasree.xyz
+        - grafana.ushasree.com
       secretName: grafana-tls
   rules:
-    - host: grafana.ushasree.xyz
+    - host: grafana.ushasree.com
       http:
         paths:
           - path: /

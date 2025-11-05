@@ -11,10 +11,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - www.ushasree.xyz
+        - www.ushasree.com
       secretName: ushasree-tls
   rules:
-    - host: www.ushasree.xyz
+    - host: www.ushasree.com
       http:
         paths:
           - path: /api

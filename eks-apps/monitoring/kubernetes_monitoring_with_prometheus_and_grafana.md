@@ -159,10 +159,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - grafana.ushasree.xyz
+        - grafana.ushasree.com
       secretName: grafana-tls
   rules:
-    - host: grafana.ushasree.xyz
+    - host: grafana.ushasree.com
       http:
         paths:
           - path: /
@@ -186,10 +186,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - prometheus.ushasree.xyz
+        - prometheus.ushasree.com
       secretName: prometheus-tls
   rules:
-    - host: prometheus.ushasree.xyz
+    - host: prometheus.ushasree.com
       http:
         paths:
           - path: /

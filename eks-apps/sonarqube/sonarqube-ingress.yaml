@@ -11,10 +11,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - sonarqube.ushasree.xyz   # Change to your desired domain name
+        - sonarqube.ushasree.com   # Change to your desired domain name
       secretName: sonarqube-tls
   rules:
-    - host: sonarqube.ushasree.xyz   # Change to your desired domain name
+    - host: sonarqube.ushasree.com   # Change to your desired domain name
       http:
         paths:
           - path: /

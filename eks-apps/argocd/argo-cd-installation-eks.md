@@ -91,10 +91,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - argocd.ushasree.xyz
+        - argocd.ushasree.com
       secretName: argocd-tls
   rules:
-    - host: argocd.ushasree.xyz
+    - host: argocd.ushasree.com
       http:
         paths:
           - path: /
@@ -120,7 +120,7 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
 
 ### **D. Access the Dashboard**
 
-- Open your browser to: `https://argocd.ushasree.xyz`
+- Open your browser to: `https://argocd.ushasree.com`
 - Login with `admin` and the password from above.
 
 ### **E. Upgrade and Uninstall**

@@ -12,10 +12,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - www.ushasree.xyz
+        - www.ushasree.com
       secretName: ushasree-tls          # Cert-manager will manage this TLS secret
   rules:
-    - host: www.ushasree.xyz
+    - host: www.ushasree.com
       http:
         paths:
           - path: /api

@@ -22,7 +22,7 @@
 
 - EKS cluster (already running)
 - `kubectl`, `helm`, and basic AWS IAM permissions (for EKS and Route53/DNS updates)
-- Your DNS (e.g. `www.ushasree.xyz`) **must point to the Ingress Controller ELB** for HTTPS to work
+- Your DNS (e.g. `www.ushasree.com`) **must point to the Ingress Controller ELB** for HTTPS to work
 
 ---
 
@@ -63,7 +63,7 @@ Look for the `nginx-ingress-ingress-nginx-controller` service.
 
 ### **D. Update Your DNS**
 
-- In your DNS provider, set a **CNAME** record for your domain (e.g., `www.ushasree.xyz`) pointing to the above ELB hostname.
+- In your DNS provider, set a **CNAME** record for your domain (e.g., `www.ushasree.com`) pointing to the above ELB hostname.
 - **Wait for DNS to propagate (can take a few minutes).**
 
 ---
@@ -129,10 +129,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - www.ushasree.xyz
+        - www.ushasree.com
       secretName: ushasree-tls
   rules:
-    - host: www.ushasree.xyz
+    - host: www.ushasree.com
       http:
         paths:
           - path: /api
@@ -178,7 +178,7 @@ kubectl get certificate -A
 
 ### **I. Access Your Application Over HTTPS**
 
-- Visit: `https://www.ushasree.xyz`
+- Visit: `https://www.ushasree.com`
 - You should see a valid certificate (padlock) and your frontend (or service) response.
 
 ---

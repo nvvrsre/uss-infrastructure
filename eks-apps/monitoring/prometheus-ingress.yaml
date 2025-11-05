@@ -11,10 +11,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - prometheus.ushasree.xyz
+        - prometheus.ushasree.com
       secretName: prometheus-tls
   rules:
-    - host: prometheus.ushasree.xyz
+    - host: prometheus.ushasree.com
       http:
         paths:
           - path: /
